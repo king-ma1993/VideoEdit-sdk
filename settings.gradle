@@ -2,3 +2,4 @@ rootProject.name = "VIdeoEditSdk"
 include ':app'
 include ':camerasdk'
 include ':basemodule'
+include ':utils'

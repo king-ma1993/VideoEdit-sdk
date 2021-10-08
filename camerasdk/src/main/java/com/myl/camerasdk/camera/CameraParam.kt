@@ -37,4 +37,13 @@ class CameraParam private constructor() {
          */
         val instance = CameraParam()
     }
+
+    // 摄像头id
+    var cameraId = 0
+
+    // 是否支持闪光灯
+    var supportFlash = false
+
+    // 实际帧率
+    var previewFps = 0
 }

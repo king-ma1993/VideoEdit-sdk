@@ -17,20 +17,12 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.google.common.util.concurrent.ListenableFuture
-import com.myl.camerasdk.listener.OnSurfaceTextureListener
-import com.myl.camerasdk.listener.PreviewCallback
 import com.myl.camerasdk.listener.PreviewCallbackAnalyzer
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
-class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : ICameraController {
-
-    companion object {
-        // 16:9的默认宽高(理想值)，CameraX的预览方式与Camera1不一致，设置的预览宽高需要是实际的预览宽高
-        private const val DEFAULT_16_9_WIDTH = 720
-        private const val DEFAULT_16_9_HEIGHT = 1280
-    }
+class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : BaseCameraController() {
 
     // Camera提供者
     private var mCameraProvider: ProcessCameraProvider? = null
@@ -38,30 +30,12 @@ class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : ICamera
     // 预览配置
     private var mPreview: Preview? = null
 
-    // 预览宽度
-    private val mPreviewWidth: Int = DEFAULT_16_9_WIDTH
-
-    // 预览高度
-    private val mPreviewHeight: Int = DEFAULT_16_9_HEIGHT
-
     // 相机数据输出的SurfaceTexture
     private var mOutputTexture: SurfaceTexture? = null
 
     // 预览帧
     private val mExecutor: Executor = Executors.newSingleThreadExecutor()
     private var mPreviewAnalyzer: ImageAnalysis? = null
-
-    // SurfaceTexture准备监听器
-    private val mSurfaceTextureListener: OnSurfaceTextureListener? = null
-
-    // 纹理更新监听器
-    private val mFrameAvailableListener: OnFrameAvailableListener? = null
-
-    // 预览回调
-    private val mPreviewCallback: PreviewCallback? = null
-
-    // 是否打开前置摄像头
-    private val isOpenFrontCamera = false
 
     // Camera接口
     private var mCamera: Camera? = null
@@ -117,9 +91,14 @@ class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : ICamera
             .build()
         mPreviewAnalyzer?.setAnalyzer(mExecutor, PreviewCallbackAnalyzer(mPreviewCallback))
 
+        rebindCamera()
+
+    }
+
+    private fun rebindCamera() {
         // 前后置摄像头选择器
         val cameraSelector = CameraSelector.Builder()
-            .requireLensFacing(if (isOpenFrontCamera) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK)
+            .requireLensFacing(if (isFrontCamera()) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK)
             .build()
 
         // 绑定输出
@@ -127,6 +106,15 @@ class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : ICamera
             lifecycleOwner, cameraSelector, mPreview,
             mPreviewAnalyzer
         )
+    }
+
+    override fun switchCamera() {
+        val front: Boolean = isFrontCamera()
+        setFront(!front)
+
+        // 解除绑定
+        mCameraProvider?.unbindAll()
+        rebindCamera()
     }
 
     /**
