@@ -1,17 +1,26 @@
 package com.myl.camerasdk.camera
 
 import android.app.Activity
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.Camera
 import android.os.Build
+import android.os.Handler
 import android.os.HandlerThread
+import android.view.Surface
 import androidx.annotation.RequiresApi
 import java.io.IOException
 import java.util.*
+import kotlin.math.abs
 
 @RequiresApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
 class CameraController(private val activity: Activity) : BaseCameraController(),
     Camera.PreviewCallback {
+
+    companion object {
+        private const val THREAD_NAME = "FrameAvailableThread"
+        private const val ONE_THOUSAND = 1000
+    }
 
     // 摄像头id
     private var mCameraId = 0
@@ -19,6 +28,9 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
     // 相机输出的SurfaceTexture
     private var mOutputTexture: SurfaceTexture? = null
     private var mOutputThread: HandlerThread? = null
+
+    // 预览角度
+    private var mOrientation = 0
 
     // 期望的fps
     private val mExpectFps = CameraParam.DESIRED_PREVIEW_FPS
@@ -39,7 +51,7 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
         if (mCamera == null) {
             throw RuntimeException("Unable to open camera")
         }
-        val cameraParam: CameraParam = CameraParam.instance
+        val cameraParam = CameraParam
         cameraParam.cameraId = mCameraId
         val parameters = mCamera?.parameters
         cameraParam.supportFlash = checkSupportFlashLight(parameters)
@@ -51,12 +63,12 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
             && supportAutoFocusFeature(parameters)
         ) {
             mCamera!!.cancelAutoFocus()
-            parameters.focusMode = Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO
+            parameters?.focusMode = Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO
         }
         mCamera!!.parameters = parameters
         setPreviewSize(mCamera, mPreviewWidth, mPreviewHeight)
         setPictureSize(mCamera, mPreviewWidth, mPreviewHeight)
-        mOrientation = calculateCameraPreviewOrientation(mActivity)
+        mOrientation = calculateCameraPreviewOrientation(activity)
         mCamera!!.setDisplayOrientation(mOrientation)
         releaseSurfaceTexture()
         mOutputTexture = createDetachedSurfaceTexture()
@@ -67,9 +79,77 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
             e.printStackTrace()
         }
         mCamera!!.startPreview()
-        if (mSurfaceTextureListener != null) {
-            mSurfaceTextureListener!!.onSurfaceTexturePrepared(mOutputTexture)
+        mSurfaceTextureListener?.onSurfaceTexturePrepared(mOutputTexture)
+    }
+
+    /**
+     * 创建一个SurfaceTexture并
+     * @return
+     */
+    private fun createDetachedSurfaceTexture(): SurfaceTexture? {
+        // 创建一个新的SurfaceTexture并从解绑GL上下文
+        val surfaceTexture = SurfaceTexture(0)
+        surfaceTexture.detachFromGLContext()
+        if (Build.VERSION.SDK_INT >= 21) {
+            if (mOutputThread != null) {
+                mOutputThread!!.quit()
+                mOutputThread = null
+            }
+            mOutputThread = HandlerThread(THREAD_NAME)
+            mOutputThread!!.start()
+            surfaceTexture.setOnFrameAvailableListener({ texture: SurfaceTexture? ->
+                if (mFrameAvailableListener != null) {
+                    mFrameAvailableListener!!.onFrameAvailable(texture)
+                }
+            }, Handler(mOutputThread!!.looper))
+        } else {
+            surfaceTexture.setOnFrameAvailableListener { texture: SurfaceTexture? ->
+                if (mFrameAvailableListener != null) {
+                    mFrameAvailableListener!!.onFrameAvailable(texture)
+                }
+            }
         }
+        return surfaceTexture
+    }
+
+    /**
+     * 判断是否支持自动对焦
+     * @param parameters
+     * @return
+     */
+    private fun supportAutoFocusFeature(parameters: Camera.Parameters?): Boolean {
+        val focusModes = parameters?.supportedFocusModes
+        return focusModes != null && focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)
+    }
+
+
+    /**
+     * 设置预览角度，setDisplayOrientation本身只能改变预览的角度
+     * previewFrameCallback以及拍摄出来的照片是不会发生改变的，拍摄出来的照片角度依旧不正常的
+     * 拍摄的照片需要自行处理
+     * 这里Nexus5X的相机简直没法吐槽，后置摄像头倒置了，切换摄像头之后就出现问题了。
+     * @param activity
+     */
+    private fun calculateCameraPreviewOrientation(activity: Activity): Int {
+        val info = Camera.CameraInfo()
+        Camera.getCameraInfo(CameraParam.cameraId, info)
+        val rotation = activity.windowManager.defaultDisplay
+            .rotation
+        var degrees = 0
+        when (rotation) {
+            Surface.ROTATION_0 -> degrees = 0
+            Surface.ROTATION_90 -> degrees = 90
+            Surface.ROTATION_180 -> degrees = 180
+            Surface.ROTATION_270 -> degrees = 270
+        }
+        var result: Int
+        if (info.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+            result = (info.orientation + degrees) % 360
+            result = (360 - result) % 360
+        } else {
+            result = (info.orientation - degrees + 360) % 360
+        }
+        return result
     }
 
     @RequiresApi(Build.VERSION_CODES.JELLY_BEAN_MR2)
@@ -111,8 +191,8 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
         mOutputThread = null
     }
 
-    override fun onPreviewFrame(p0: ByteArray?, p1: Camera?) {
-        TODO("Not yet implemented")
+    override fun onPreviewFrame(data: ByteArray?, camera: Camera?) {
+        mPreviewCallback?.onPreviewFrame(data)
     }
 
 
@@ -122,16 +202,18 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
      * @param expectWidth
      * @param expectHeight
      */
-    private fun setPreviewSize(camera: Camera, expectWidth: Int, expectHeight: Int) {
-        val parameters = camera.parameters
-        val size: Camera.Size = calculatePerfectSize(
-            parameters.supportedPreviewSizes,
-            expectWidth, expectHeight, CalculateType.Lower
-        )
-        parameters.setPreviewSize(size.width, size.height)
-        mPreviewWidth = size.width
-        mPreviewHeight = size.height
-        camera.parameters = parameters
+    private fun setPreviewSize(camera: Camera?, expectWidth: Int, expectHeight: Int) {
+        camera?.let {
+            val parameters = camera.parameters
+            val size: Camera.Size = calculatePerfectSize(
+                parameters.supportedPreviewSizes,
+                expectWidth, expectHeight, CalculateType.Lower
+            )
+            parameters.setPreviewSize(size.width, size.height)
+            mPreviewWidth = size.width
+            mPreviewHeight = size.height
+            camera.parameters = parameters
+        }
     }
 
     /**
@@ -140,14 +222,16 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
      * @param expectWidth
      * @param expectHeight
      */
-    private fun setPictureSize(camera: Camera, expectWidth: Int, expectHeight: Int) {
-        val parameters = camera.parameters
-        val size: Camera.Size? = calculatePerfectSize(
-            parameters.supportedPictureSizes,
-            expectWidth, expectHeight, CalculateType.Max
-        )
-        parameters.setPictureSize(size?.width ?: 0, size?.height ?: 0)
-        camera.parameters = parameters
+    private fun setPictureSize(camera: Camera?, expectWidth: Int, expectHeight: Int) {
+        camera?.let {
+            val parameters = camera.parameters
+            val size: Camera.Size? = calculatePerfectSize(
+                parameters.supportedPictureSizes,
+                expectWidth, expectHeight, CalculateType.Max
+            )
+            parameters.setPictureSize(size?.width ?: 0, size?.height ?: 0)
+            camera.parameters = parameters
+        }
     }
 
     /**
@@ -202,7 +286,7 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
                 if (noBigEnough.size > 0) {
                     val size = Collections.max(
                         noBigEnough,
-                       CompareAreaSize()
+                        CompareAreaSize()
                     )
                     if (size.width.toFloat() / expectWidth >= 0.8
                         && size.height.toFloat() / expectHeight > 0.8
@@ -250,31 +334,31 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
             // 辗转计算宽高最接近的值
             for (size in sizes) {
                 // 如果宽高相等，则直接返回
-                if (size.width == expectWidth && size.height == expectHeight && size.height.toFloat() / size.width.toFloat() == CameraParam.getInstance().currentRatio) {
+                if (size.width == expectWidth && size.height == expectHeight && size.height.toFloat() / size.width.toFloat() == CameraParam.currentRatio) {
                     result = size
                     break
                 }
                 // 仅仅是宽度相等，计算高度最接近的size
                 if (size.width == expectWidth) {
                     widthOrHeight = true
-                    if (Math.abs(result.height - expectHeight) > Math.abs(size.height - expectHeight)
-                        && size.height.toFloat() / size.width.toFloat() == CameraParam.instance.currentRatio
+                    if (abs(result.height - expectHeight) > abs(size.height - expectHeight)
+                        && size.height.toFloat() / size.width.toFloat() == CameraParam.currentRatio
                     ) {
                         result = size
                         break
                     }
                 } else if (size.height == expectHeight) {
                     widthOrHeight = true
-                    if (Math.abs(result.width - expectWidth) > Math.abs(size.width - expectWidth)
-                        && size.height.toFloat() / size.width.toFloat() == CameraParam.instance.currentRatio
+                    if (abs(result.width - expectWidth) > abs(size.width - expectWidth)
+                        && size.height.toFloat() / size.width.toFloat() == CameraParam.currentRatio
                     ) {
                         result = size
                         break
                     }
                 } else if (!widthOrHeight) {
-                    if (Math.abs(result.width - expectWidth) > Math.abs(size.width - expectWidth) && Math.abs(
+                    if (abs(result.width - expectWidth) > abs(size.width - expectWidth) && abs(
                             result.height - expectHeight
-                        ) > Math.abs(size.height - expectHeight) && size.height.toFloat() / size.width.toFloat() == CameraParam.getInstance().currentRatio
+                        ) > abs(size.height - expectHeight) && size.height.toFloat() / size.width.toFloat() == CameraParam.currentRatio
                     ) {
                         result = size
                     }
@@ -311,7 +395,7 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
         front = front && CameraApi.hasFrontCamera(activity)
         // 期望值不一致
         if (front != isFrontCamera()) {
-            setFront(front)
+            setFrontCamera(front)
             openCamera()
         }
     }
@@ -343,5 +427,154 @@ class CameraController(private val activity: Activity) : BaseCameraController(),
             temp[1] / 2
         }
     }
+
+    override fun zoomIn() {
+        if (canZoom()) {
+            val parameters = mCamera!!.parameters
+            val current = parameters.zoom
+            val maxZoom = parameters.maxZoom
+            parameters.zoom = (current + 1).coerceAtMost(maxZoom)
+            mCamera!!.parameters = parameters
+        }
+    }
+
+    override fun zoomOut() {
+        if (canZoom()) {
+            val parameters = mCamera!!.parameters
+            val current = parameters.zoom
+            parameters.zoom = (current - 1).coerceAtLeast(0)
+            mCamera!!.parameters = parameters
+        }
+    }
+
+    private fun canZoom(): Boolean {
+        return mCamera != null && mCamera!!.parameters.isZoomSupported
+    }
+
+    override fun isFrontCamera(): Boolean {
+        return mCameraId == Camera.CameraInfo.CAMERA_FACING_FRONT
+    }
+    override fun setFrontCamera(front: Boolean) {
+        mCameraId = if (front) {
+            Camera.CameraInfo.CAMERA_FACING_FRONT
+        } else {
+            Camera.CameraInfo.CAMERA_FACING_BACK
+        }
+    }
+
+    override fun getOrientation(): Int {
+        return mOrientation
+    }
+
+    override fun getPreviewWidth(): Int {
+        return mPreviewWidth
+    }
+
+    override fun getPreviewHeight(): Int {
+        return mPreviewHeight
+    }
+
+    override fun canAutoFocus(): Boolean {
+        val focusModes = mCamera?.parameters?.supportedFocusModes
+        return focusModes != null && focusModes.contains(Camera.Parameters.FOCUS_MODE_AUTO)
+    }
+
+    override fun setFocusArea(rect: Rect?) {
+        mCamera?.let {
+            val parameters = it.parameters // 先获取当前相机的参数配置对象
+            if (supportAutoFocusFeature(parameters)) {
+                parameters.focusMode = Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO // 设置聚焦模式
+            }
+            if (parameters.maxNumFocusAreas > 0) {
+                val focusAreas: MutableList<Camera.Area> = ArrayList()
+                focusAreas.add(Camera.Area(rect, CameraParam.Weight))
+                // 设置聚焦区域
+                if (parameters.maxNumFocusAreas > 0) {
+                    parameters.focusAreas = focusAreas
+                }
+                // 设置计量区域
+                if (parameters.maxNumMeteringAreas > 0) {
+                    parameters.meteringAreas = focusAreas
+                }
+                // 取消掉进程中所有的聚焦功能
+                it.parameters = parameters
+                it.autoFocus { success: Boolean, camera: Camera ->
+                    val params = camera.parameters
+                    // 设置自动对焦
+                    if (supportAutoFocusFeature(params)) {
+                        camera.cancelAutoFocus()
+                        params.focusMode = Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO
+                    }
+                    camera.parameters = params
+                    camera.autoFocus(null)
+                }
+            }
+        }
+    }
+
+    override fun getFocusArea(x: Float, y: Float, width: Int, height: Int, focusSize: Int): Rect? {
+        return calculateTapArea(x, y, width, height, focusSize, 1.0f)
+    }
+
+    override fun supportTorch(front: Boolean): Boolean {
+        return if (front) {
+            true
+        } else !checkSupportFlashLight(mCamera?.parameters)
+    }
+
+    override fun setFlashLight(on: Boolean) {
+        if (supportTorch(isFrontCamera())) {
+            return
+        }
+        mCamera?.let {
+            val parameters = it.parameters
+            if (on) {
+                parameters.flashMode = Camera.Parameters.FLASH_MODE_TORCH
+            } else {
+                parameters.flashMode = Camera.Parameters.FLASH_MODE_OFF
+            }
+            it.parameters = parameters
+        }
+    }
+
+    /**
+     * 计算点击区域
+     * @param x
+     * @param y
+     * @param width
+     * @param height
+     * @param focusSize
+     * @param coefficient
+     * @return
+     */
+    private fun calculateTapArea(
+        x: Float, y: Float, width: Int, height: Int,
+        focusSize: Int, coefficient: Float
+    ): Rect? {
+        val areaSize = java.lang.Float.valueOf(focusSize * coefficient).toInt()
+        val left: Int = clamp(java.lang.Float.valueOf(y / height * 2000 - ONE_THOUSAND).toInt(), areaSize)
+        val top: Int =
+            clamp(java.lang.Float.valueOf((height - x) / width * 2000 - ONE_THOUSAND).toInt(), areaSize)
+        return Rect(left, top, left + areaSize, top + areaSize)
+    }
+
+    /**
+     * 确保所选区域在在合理范围内
+     * @param touchCoordinateInCameraReper
+     * @param focusAreaSize
+     * @return
+     */
+    private fun clamp(touchCoordinateInCameraReper: Int, focusAreaSize: Int): Int {
+        return if (abs(touchCoordinateInCameraReper) + focusAreaSize > ONE_THOUSAND) {
+                if (touchCoordinateInCameraReper > 0) {
+                    ONE_THOUSAND - focusAreaSize
+                } else {
+                    -ONE_THOUSAND + focusAreaSize
+                }
+            } else {
+                touchCoordinateInCameraReper - focusAreaSize / 2
+            }
+    }
+
 
 }

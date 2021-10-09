@@ -1,8 +1,10 @@
 package com.myl.camerasdk.camera
 
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.graphics.SurfaceTexture.OnFrameAvailableListener
 import android.os.Build
+import android.util.Log
 import android.util.Size
 import android.view.Surface
 import androidx.annotation.NonNull
@@ -18,11 +20,18 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.google.common.util.concurrent.ListenableFuture
 import com.myl.camerasdk.listener.PreviewCallbackAnalyzer
+import java.util.*
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
 class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : BaseCameraController() {
+
+    companion object {
+        private const val DEGREE_90 = 90
+        private const val DEGREE_270 = 270
+        private const val TAG = "CameraXController"
+    }
 
     // Camera提供者
     private var mCameraProvider: ProcessCameraProvider? = null
@@ -39,6 +48,17 @@ class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : BaseCam
 
     // Camera接口
     private var mCamera: Camera? = null
+
+    // 是否打开前置摄像头
+    private var mFacingFront = false
+
+    // 预览角度
+    private var mRotation = 0
+
+    init {
+        mFacingFront = true
+        mRotation = DEGREE_90
+    }
 
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     override fun openCamera() {
@@ -110,11 +130,27 @@ class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : BaseCam
 
     override fun switchCamera() {
         val front: Boolean = isFrontCamera()
-        setFront(!front)
+        setFrontCamera(!front)
 
         // 解除绑定
         mCameraProvider?.unbindAll()
         rebindCamera()
+    }
+
+    override fun zoomIn() {
+        mCamera?.apply {
+            val zoomState = Objects.requireNonNull(cameraInfo.zoomState.value)
+            val currentZoomRatio = zoomState?.maxZoomRatio?.coerceAtMost(zoomState?.zoomRatio + 0.1f) ?: 0f
+            cameraControl.setZoomRatio(currentZoomRatio)
+        }
+    }
+
+    override fun zoomOut() {
+        mCamera?.apply {
+            val zoomState = Objects.requireNonNull(cameraInfo.zoomState.value)
+            val currentZoomRatio = zoomState?.minZoomRatio?.coerceAtLeast(zoomState?.zoomRatio - 0.1f) ?: 0f
+            cameraControl.setZoomRatio(currentZoomRatio)
+        }
     }
 
     /**
@@ -140,6 +176,52 @@ class CameraXController(@NonNull val lifecycleOwner: FragmentActivity) : BaseCam
     override fun closeCamera() {
         mCameraProvider?.unbindAll()
         releaseSurfaceTexture()
+    }
+
+    override fun isFrontCamera(): Boolean {
+        return mFacingFront
+    }
+    override fun setFrontCamera(front: Boolean) {
+        mFacingFront = front
+    }
+
+    override fun getOrientation(): Int {
+        return mRotation
+    }
+
+    override fun getPreviewWidth(): Int {
+        return if (mRotation == DEGREE_90 || mRotation == DEGREE_270) {
+            mPreviewHeight
+        } else mPreviewWidth
+    }
+
+    override fun getPreviewHeight(): Int {
+        return if (mRotation == DEGREE_90 || mRotation == DEGREE_270) {
+            mPreviewWidth
+        } else mPreviewHeight
+    }
+
+    override fun canAutoFocus(): Boolean {
+        return false
+    }
+
+    override fun setFocusArea(rect: Rect?) {
+    }
+
+    override fun getFocusArea(x: Float, y: Float, width: Int, height: Int, focusSize: Int): Rect? {
+        return null
+    }
+
+    override fun supportTorch(front: Boolean): Boolean {
+        return mCamera?.cameraInfo?.hasFlashUnit() == true
+    }
+
+    override fun setFlashLight(on: Boolean) {
+        if (supportTorch(isFrontCamera())) {
+            Log.e(TAG, "Failed to set flash light: $on")
+            return
+        }
+        mCamera?.cameraControl?.enableTorch(on)
     }
 
     /**

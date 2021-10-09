@@ -36,7 +36,7 @@ interface ICameraController {
      * 设置是否为前置摄像头
      * @param front 是否前置摄像头
      */
-    fun setFront(front: Boolean)
+    fun setFrontCamera(front: Boolean)
 
     /**
      * 是否前置摄像头

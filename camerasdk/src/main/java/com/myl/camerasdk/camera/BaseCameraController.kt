@@ -27,8 +27,8 @@ abstract class BaseCameraController : ICameraController {
     // 预览回调
     protected var mPreviewCallback: PreviewCallback? = null
 
-    // 是否打开前置摄像头
-    private var isOpenFrontCamera = false
+//    // 是否打开前置摄像头
+//    private var isOpenFrontCamera = false
 
 
     override fun setOnSurfaceTextureListener(listener: OnSurfaceTextureListener?) {
@@ -41,10 +41,6 @@ abstract class BaseCameraController : ICameraController {
 
     override fun setOnFrameAvailableListener(listener: SurfaceTexture.OnFrameAvailableListener?) {
         mFrameAvailableListener = listener
-    }
-
-    override fun isFrontCamera(): Boolean {
-        return isOpenFrontCamera
     }
 
 }
