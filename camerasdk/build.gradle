@@ -3,6 +3,8 @@ plugins {
     id 'kotlin-android'
 }
 
+apply from: '../deps.gradle'
+
 android {
     compileSdkVersion 30
     buildToolsVersion "30.0.3"
@@ -60,4 +62,6 @@ dependencies {
     implementation "androidx.camera:camera-camera2:${camerax_version}"
     // CameraX Lifecycle library
     implementation "androidx.camera:camera-lifecycle:$camerax_version"
+
+    implementation Deps.androidx.fragment
 }
